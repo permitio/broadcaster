@@ -1,7 +1,11 @@
 import asyncio
+import logging
+import random
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, AsyncIterator, Dict, Optional
 from urllib.parse import urlparse
+
+logger = logging.getLogger("broadcaster")
 
 
 class Event:
@@ -25,13 +29,17 @@ class Unsubscribed(Exception):
 
 
 class Broadcast:
-    def __init__(self, url: str):
+    def __init__(self, url: str, retry_connection=True):
+        self.retry_connection = retry_connection
+
         from broadcaster._backends.base import BroadcastBackend
 
         parsed_url = urlparse(url)
         self._backend: BroadcastBackend
         self._subscribers: Dict[str, Any] = {}
-        if parsed_url.scheme == "redis":
+        self._listener_task = None
+
+        if parsed_url.scheme in ("redis", "rediss"):
             from broadcaster._backends.redis import RedisBackend
 
             self._backend = RedisBackend(url)
@@ -41,7 +49,7 @@ class Broadcast:
 
             self._backend = PostgresBackend(url)
 
-        if parsed_url.scheme == "kafka":
+        elif parsed_url.scheme == "kafka":
             from broadcaster._backends.kafka import KafkaBackend
 
             self._backend = KafkaBackend(url)
@@ -51,6 +59,9 @@ class Broadcast:
 
             self._backend = MemoryBackend(url)
 
+        else:
+            raise ValueError(f'Unsupported backend {url}')
+
     async def __aenter__(self) -> "Broadcast":
         await self.connect()
         return self
@@ -58,9 +69,27 @@ class Broadcast:
     async def __aexit__(self, *args: Any, **kwargs: Any) -> None:
         await self.disconnect()
 
-    async def connect(self) -> None:
-        await self._backend.connect()
+    async def connect(
+        self, initial_wait=0.2, max_wait=5.0, incremental_max_wait=2.0
+    ) -> None:
+        if self._listener_task:
+            self._listener_task.cancel()
         self._listener_task = asyncio.create_task(self._listener())
+        wait_time = initial_wait
+        logger.info(f"Connecting...")
+        while True:
+            try:
+                await self._backend.connect()
+                logger.info(f"Connected")
+                break
+            except:
+                logger.error("Error connecting to DB")
+                if self.retry_connection:
+                    await asyncio.sleep(wait_time)
+                    wait_time = min(max_wait, wait_time)
+                    wait_time += random.random() * incremental_max_wait  # nosec
+                else:
+                    raise
 
     async def disconnect(self) -> None:
         if self._listener_task.done():
@@ -74,12 +103,17 @@ class Broadcast:
             event = await self._backend.next_published()
             if event is None:
                 # Backend is disconnected
-                break
+                logger.error("Disconnected")
+                if self.retry_connection:
+                    await self.connect()
+                    continue
+                else:
+                    break
 
             for queue in list(self._subscribers.get(event.channel, [])):
                 await queue.put(event)
 
-        # Ubsubscribe all
+        # Unsubscribe all
         for queue in sum([list(qs) for qs in self._subscribers.values()], []):
             await queue.put(None)
 
@@ -93,7 +127,7 @@ class Broadcast:
         try:
             if not self._subscribers.get(channel):
                 await self._backend.subscribe(channel)
-                self._subscribers[channel] = set([queue])
+                self._subscribers[channel] = {queue}
             else:
                 self._subscribers[channel].add(queue)
 
