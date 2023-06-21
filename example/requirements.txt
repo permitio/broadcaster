@@ -2,5 +2,4 @@ uvicorn
 websockets
 starlette
 jinja2
-python-dotenv
 broadcaster[redis,postgres,kafka]
