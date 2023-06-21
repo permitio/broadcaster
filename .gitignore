@@ -7,3 +7,6 @@ test.db
 venv/
 build/
 dist/
+certs/*
+!/certs/generate-certs.sh
+tests/.env.ssl
