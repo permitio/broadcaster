@@ -11,4 +11,6 @@ if [ -n "$1" ]; then
     fi
 fi
 
+(cd ../certs && ./generate-certs.sh)
+
 docker-compose up $1

@@ -91,7 +91,7 @@ Python 3.7+
 The following environment variables are exposed to allow SASL authentication with Kafka (along with their default assignment):
 
 ```
-KAFKA_SECURITY_PROTOCOL=PLAINTEXT   # PLAINTEXT, SASL_PLAINTEXT, SASL_SSL
+KAFKA_SECURITY_PROTOCOL=PLAINTEXT   # PLAINTEXT, SASL_PLAINTEXT, SASL_SSL, SSL
 KAFKA_SASL_MECHANISM=PLAIN   # PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
 KAFKA_PLAIN_USERNAME=None   # any str
 KAFKA_PLAIN_PASSWORD=None   # any str

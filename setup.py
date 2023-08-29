@@ -49,7 +49,7 @@ setup(
         "redis": ["asyncio-redis"],
         "postgres": ["asyncpg"],
         "kafka": ["aiokafka"],
-        "test": ["pytest", "pytest-asyncio"],
+        "test": ["pytest", "pytest-asyncio", "python-dotenv"],
     },
     classifiers=[
         "Development Status :: 3 - Alpha",
