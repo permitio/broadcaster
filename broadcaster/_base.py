@@ -51,6 +51,11 @@ class Broadcast:
 
             self._backend = MemoryBackend(url)
 
+        elif parsed_url.scheme == "pulsar":
+            from broadcaster._backends.pulsar import PulsarBackend
+
+            self._backend = PulsarBackend(url)
+
     async def __aenter__(self) -> "Broadcast":
         await self.connect()
         return self

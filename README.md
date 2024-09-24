@@ -75,6 +75,7 @@ Python 3.7+
 
 * `pip install permit-broadcaster`
 * `pip install permit-broadcaster[redis]`
+* `pip install permit-broadcaster[pulsar]`
 * `pip install permit-broadcaster[postgres]`
 * `pip install permit-broadcaster[kafka]`
 
@@ -82,9 +83,11 @@ Python 3.7+
 
 * `Broadcast('memory://')`
 * `Broadcast("redis://localhost:6379")`
+* `Broadcast("pulsar://localhost:6650")`
 * `Broadcast("postgres://localhost:5432/broadcaster")`
 * `Broadcast("kafka://localhost:9092")`
 * `Broadcast("kafka://broker_1:9092,broker_2:9092")`
+
 
 ## Kafka environment variables
 

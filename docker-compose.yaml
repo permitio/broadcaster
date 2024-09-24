@@ -36,3 +36,16 @@ services:
       - POSTGRES_USER=postgres
     ports:
       - 5432:5432
+  pulsar:
+    image: apachepulsar/pulsar:3.3.1
+    command: bin/pulsar standalone
+    ports:
+      - 6650:6650
+      - 8080:8080
+    volumes:
+      - pulsardata:/pulsar/data
+      - pulsarconf:/pulsar/conf
+
+volumes:
+  pulsardata:
+  pulsarconf:
