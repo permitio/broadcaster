@@ -1,4 +1,4 @@
-import asyncio
+import anyio
 import logging
 import typing
 from urllib.parse import urlparse
@@ -20,15 +20,18 @@ class PulsarBackend(BroadcastBackend):
     async def connect(self) -> None:
         try:
             logging.info("Connecting to brokers")
-            self._client = await asyncio.to_thread(pulsar.Client, self._service_url)
-            self._producer = await asyncio.to_thread(
-                self._client.create_producer, "broadcast"
+            self._client = await anyio.to_thread.run_sync(
+                lambda: pulsar.Client(self._service_url)
             )
-            self._consumer = await asyncio.to_thread(
-                self._client.subscribe,
-                "broadcast",
-                subscription_name="broadcast_subscription",
-                consumer_type=pulsar.ConsumerType.Shared,
+            self._producer = await anyio.to_thread.run_sync(
+                lambda: self._client.create_producer("broadcast")
+            )
+            self._consumer = await anyio.to_thread.run_sync(
+                lambda: self._client.subscribe(
+                    "broadcast",
+                    subscription_name="broadcast_subscription",
+                    consumer_type=pulsar.ConsumerType.Shared,
+                )
             )
             logging.info("Successfully connected to brokers")
         except Exception as e:
@@ -37,11 +40,11 @@ class PulsarBackend(BroadcastBackend):
 
     async def disconnect(self) -> None:
         if self._producer:
-            await asyncio.to_thread(self._producer.close)
+            await anyio.to_thread.run_sync(self._producer.close)
         if self._consumer:
-            await asyncio.to_thread(self._consumer.close)
+            await anyio.to_thread.run_sync(self._consumer.close)
         if self._client:
-            await asyncio.to_thread(self._client.close)
+            await anyio.to_thread.run_sync(self._client.close)
 
     async def subscribe(self, channel: str) -> None:
         # In this implementation, we're using a single topic 'broadcast'
@@ -54,17 +57,17 @@ class PulsarBackend(BroadcastBackend):
 
     async def publish(self, channel: str, message: typing.Any) -> None:
         encoded_message = f"{channel}:{message}".encode("utf-8")
-        await asyncio.to_thread(self._producer.send, encoded_message)
+        await anyio.to_thread.run_sync(lambda: self._producer.send(encoded_message))
 
     async def next_published(self) -> Event:
         while True:
             try:
-                msg = await asyncio.to_thread(self._consumer.receive)
+                msg = await anyio.to_thread.run_sync(self._consumer.receive)
                 channel, content = msg.data().decode("utf-8").split(":", 1)
-                await asyncio.to_thread(self._consumer.acknowledge, msg)
+                await anyio.to_thread.run_sync(lambda: self._consumer.acknowledge(msg))
                 return Event(channel=channel, message=content)
 
-            except asyncio.CancelledError:
+            except anyio.get_cancelled_exc_class():
                 # cancellation
                 logging.info("next_published task is being cancelled")
                 raise
