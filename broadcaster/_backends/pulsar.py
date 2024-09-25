@@ -6,6 +6,7 @@ import pulsar
 from broadcaster._base import Event
 from .base import BroadcastBackend
 
+logger = logging.getLogger(__name__)
 
 class PulsarBackend(BroadcastBackend):
     def __init__(self, url: str):
@@ -14,64 +15,80 @@ class PulsarBackend(BroadcastBackend):
         self._port = parsed_url.port or 6650
         self._service_url = f"pulsar://{self._host}:{self._port}"
         self._client = None
-        self._producer = None
-        self._consumer = None
+        self._producers = {}
+        self._consumers = {}
+        self._subscribed_channels = set()
 
     async def connect(self) -> None:
         try:
-            logging.info("Connecting to brokers")
+            logger.info("Connecting to Pulsar brokers")
             self._client = await anyio.to_thread.run_sync(
                 lambda: pulsar.Client(self._service_url)
             )
-            self._producer = await anyio.to_thread.run_sync(
-                lambda: self._client.create_producer("broadcast")
-            )
-            self._consumer = await anyio.to_thread.run_sync(
-                lambda: self._client.subscribe(
-                    "broadcast",
-                    subscription_name="broadcast_subscription",
-                    consumer_type=pulsar.ConsumerType.Shared,
-                )
-            )
-            logging.info("Successfully connected to brokers")
+            logger.info("Successfully connected to Pulsar brokers")
         except Exception as e:
-            logging.error(e)
+            logger.error(f"Error connecting to Pulsar: {e}")
             raise e
 
     async def disconnect(self) -> None:
-        if self._producer:
-            await anyio.to_thread.run_sync(self._producer.close)
-        if self._consumer:
-            await anyio.to_thread.run_sync(self._consumer.close)
+        for producer in self._producers.values():
+            await anyio.to_thread.run_sync(producer.close)
+        for consumer in self._consumers.values():
+            await anyio.to_thread.run_sync(consumer.close)
         if self._client:
             await anyio.to_thread.run_sync(self._client.close)
 
     async def subscribe(self, channel: str) -> None:
-        # In this implementation, we're using a single topic 'broadcast'
-        # So we don't need to do anything here
-        pass
+        if channel not in self._subscribed_channels:
+            self._subscribed_channels.add(channel)
+            consumer = await anyio.to_thread.run_sync(
+                lambda: self._client.subscribe(
+                    channel,
+                    subscription_name=f"broadcast_subscription_{channel}",
+                    consumer_type=pulsar.ConsumerType.Shared,
+                )
+            )
+            self._consumers[channel] = consumer
+            logger.info(f"Subscribed to channel: {channel}")
 
     async def unsubscribe(self, channel: str) -> None:
-        # Similarly, we don't need to do anything here
-        pass
+        if channel in self._subscribed_channels:
+            self._subscribed_channels.remove(channel)
+            consumer = self._consumers.pop(channel, None)
+            if consumer:
+                await anyio.to_thread.run_sync(consumer.close)
+            logger.info(f"Unsubscribed from channel: {channel}")
 
     async def publish(self, channel: str, message: typing.Any) -> None:
-        encoded_message = f"{channel}:{message}".encode("utf-8")
-        await anyio.to_thread.run_sync(lambda: self._producer.send(encoded_message))
+        if channel not in self._producers:
+            self._producers[channel] = await anyio.to_thread.run_sync(
+                lambda: self._client.create_producer(channel)
+            )
+        encoded_message = str(message).encode("utf-8")
+        await anyio.to_thread.run_sync(lambda: self._producers[channel].send(encoded_message))
+        logger.info(f"Published message to channel {channel}: {message}")
 
     async def next_published(self) -> Event:
         while True:
-            try:
-                msg = await anyio.to_thread.run_sync(self._consumer.receive)
-                channel, content = msg.data().decode("utf-8").split(":", 1)
-                await anyio.to_thread.run_sync(lambda: self._consumer.acknowledge(msg))
-                return Event(channel=channel, message=content)
+            if not self._consumers:
+                await anyio.sleep(0.1)  # Wait a bit before checking again
+                continue
+            
+            for channel, consumer in self._consumers.items():
+                try:
+                    msg = await anyio.to_thread.run_sync(
+                        lambda: consumer.receive(timeout_millis=100)
+                    )
+                    if msg:
+                        content = msg.data().decode("utf-8")
+                        await anyio.to_thread.run_sync(consumer.acknowledge, msg)
+                        logger.info(f"Received message from channel {channel}: {content}")
+                        return Event(channel=channel, message=content)
+                except pulsar.Timeout:
+                    # No message received, continue to next consumer
+                    continue
+                except Exception as e:
+                    logger.error(f"Error receiving message from channel {channel}: {e}")
 
-            except anyio.get_cancelled_exc_class():
-                # cancellation
-                logging.info("next_published task is being cancelled")
-                raise
-
-            except Exception as e:
-                logging.error(f"Error in next_published: {e}")
-                raise
+            # If we've checked all consumers and found no messages, wait a bit before the next iteration
+            await anyio.sleep(0.1)
