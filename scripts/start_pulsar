@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# Install Docker Compose if it's not available
+if ! command -v docker-compose &> /dev/null; then
+    echo "Docker Compose not found. Installing..."
+    sudo apt-get update
+    sudo apt-get install -y docker-compose
+else
+    echo "Docker Compose is already installed."
+fi
+
+# Start Pulsar using Docker Compose
+echo "Starting Pulsar..."
+docker-compose up -d pulsar
+
+echo "Pulsar startup complete."

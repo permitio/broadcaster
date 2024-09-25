@@ -1,0 +1,19 @@
+#!/bin/bash
+
+MAX_RETRIES=60
+RETRY_INTERVAL=5
+HEALTH_CHECK_URL="http://localhost:8080/admin/v2/brokers/healthcheck"
+
+echo "Waiting for Pulsar to be ready..."
+
+for i in $(seq 1 $MAX_RETRIES); do
+    if curl -s "$HEALTH_CHECK_URL" > /dev/null; then
+        echo "Pulsar is ready!"
+        exit 0
+    fi
+    echo "Attempt $i/$MAX_RETRIES: Pulsar is not ready yet. Retrying in $RETRY_INTERVAL seconds..."
+    sleep $RETRY_INTERVAL
+done
+
+echo "Error: Pulsar did not become ready within the allocated time."
+exit 1
