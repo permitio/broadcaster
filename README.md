@@ -7,7 +7,7 @@ This is a fork of [encode/broadcaster](https://github.com/encode/broadcaster).
 Broadcaster helps you develop realtime streaming functionality by providing
 a simple broadcast API onto a number of different backend services.
 
-It currently supports [Redis PUB/SUB](https://redis.io/topics/pubsub), [Apache Kafka](https://kafka.apache.org/), and [Postgres LISTEN/NOTIFY](https://www.postgresql.org/docs/current/sql-notify.html), plus a simple in-memory backend, that you can use for local development or during testing.
+It currently supports [Redis PUB/SUB](https://redis.io/topics/pubsub), [Apache Kafka](https://kafka.apache.org/), [Apache Pulsar](https://pulsar.apache.org/) and [Postgres LISTEN/NOTIFY](https://www.postgresql.org/docs/current/sql-notify.html), plus a simple in-memory backend, that you can use for local development or during testing.
 
 <img src="https://raw.githubusercontent.com/encode/broadcaster/master/docs/demo.gif" alt='WebSockets Demo'>
 
@@ -107,6 +107,35 @@ KAFKA_SSL_KEY_PASSWORD=None   # Private key password
 
 For full details refer to the (AIOKafka options)[https://aiokafka.readthedocs.io/en/stable/api.html#producer-class] where the variable name matches the capitalised env var with an additional `KAFKA_` prefix.
 For SSL properties see (AIOKafka SSL Context)[https://aiokafka.readthedocs.io/en/stable/api.html#aiokafka.helpers.create_ssl_context].
+
+
+## Apache Pulsar
+
+Support for Apache Pulsar, a distributed messaging system, has been added.
+
+To use Pulsar as a backend, ensure you have the necessary package installed:
+
+```bash
+pip install permit-broadcaster[pulsar]
+```
+
+You will also need a running Pulsar instance. Follow the [official Pulsar installation guide](https://pulsar.apache.org/docs/3.3.x/getting-started-home/) for detailed setup instructions. You can also start Pulsar via Docker using the provided `docker-compose.yaml` file in the repository:
+
+```bash
+docker-compose up pulsar
+# The same applies for other services...
+```
+
+**In the Available backends section, add:**
+```python
+Broadcast("pulsar://localhost:6650")
+```
+
+Ensure you have a Pulsar server running before executing this example.
+
+### Updated Changes
+* **Added Pulsar**: Apache Pulsar is now available as a backend in Broadcaster.
+
 
 ## Where next?
 
