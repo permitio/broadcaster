@@ -1,0 +1,17 @@
+#!/bin/bash
+
+
+echo "Stopping Pulsar container..."
+
+# Stop and remove containers defined in docker-compose.yml
+if docker-compose down; then
+    echo "Pulsar container have been stopped and removed successfully."
+else
+    echo "Error: Failed to stop Pulsar containers. Please check Docker Compose configuration."
+    exit 1
+fi
+
+# Optional: Remove volumes
+# docker-compose down -v
+
+echo "Cleanup complete."

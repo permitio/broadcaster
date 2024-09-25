@@ -55,31 +55,22 @@ jobs:
         with:
           python-version: "${{ matrix.python-version }}"
 
-      # Install Docker Compose if it's not available by default
-      - name: Set up Docker Compose
-        run: sudo apt-get install docker-compose -y
 
-      # Start Pulsar using Docker Compose
       - name: Start Pulsar
-        run: docker-compose up -d pulsar
+        run: "scripts/start_pulsar"
 
-      
       - name: Wait for Pulsar
-        run: |
-          timeout 300 bash -c '
-          until curl -s http://localhost:8080/admin/v2/brokers/healthcheck; do
-            echo "Waiting for Pulsar to be ready..."
-            sleep 5
-          done
-          echo "pulsar is ready"
-          '
+        run: "scripts/wait_for_pulsar"
 
       - name: "Install dependencies"
         run: "scripts/install"
+
       # - name: "Run linting checks"
       #   run: "scripts/check"
+
       - name: "Build package & docs"
         run: "scripts/build"
+
       - name: "Run tests"
         run: "scripts/test"
 
@@ -88,4 +79,5 @@ jobs:
 
       # Stop the Pulsar container after all tests are complete
       - name: Stop Pulsar
-        run: docker-compose down
+        if: always()  # This ensures the step runs even if previous steps fail
+        run: "scripts/stop_pulsar"
