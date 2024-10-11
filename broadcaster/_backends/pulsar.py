@@ -77,14 +77,18 @@ class PulsarBackend(BroadcastBackend):
             self._receiver_tasks[channel] = asyncio.create_task(self._receiver(channel, consumer))
             logger.info(f"Subscribed to channel: {channel}")
 
+
     async def unsubscribe(self, channel: str) -> None:
         if channel in self._consumers:
-            self._receiver_tasks[channel].cancel()
-            await self._receiver_tasks[channel]
-            del self._receiver_tasks[channel]
             consumer = self._consumers.pop(channel)
-            await anyio.to_thread.run_sync(consumer.close)
+            try:
+                await anyio.to_thread.run_sync(consumer.close)
+            except ValueError:
+                logger.warning(f"Consumer for channel {channel} was not in the client's list")
+            except Exception as e:
+                logger.error(f"Error closing consumer for channel {channel}: {e}")
             logger.info(f"Unsubscribed from channel: {channel}")
+
 
     async def publish(self, channel: str, message: typing.Any) -> None:
         if channel not in self._producers:
