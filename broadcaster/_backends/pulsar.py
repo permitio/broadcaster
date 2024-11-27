@@ -1,10 +1,8 @@
-import anyio
 import asyncio
 import logging
 import typing
 from urllib.parse import urlparse
 import pulsar
-import traceback
 from broadcaster._base import Event
 from .base import BroadcastBackend
 
@@ -25,9 +23,7 @@ class PulsarBackend(BroadcastBackend):
     async def connect(self) -> None:
         try:
             logger.info("Connecting to Pulsar brokers")
-            self._client = await anyio.to_thread.run_sync(
-                lambda: pulsar.Client(self._service_url)
-            )
+            self._client = await asyncio.to_thread(pulsar.Client, self._service_url)
             logger.info("Successfully connected to Pulsar brokers")
         except Exception as e:
             logger.error(f"Error connecting to Pulsar: {e}", exc_info=True)
@@ -37,37 +33,35 @@ class PulsarBackend(BroadcastBackend):
         # Cancel all receiver tasks
         for task in self._receiver_tasks.values():
             task.cancel()
-        
 
         await asyncio.gather(*self._receiver_tasks.values(), return_exceptions=True)
-        
+
         # Close producers and consumers first
         close_coros = [
-            anyio.to_thread.run_sync(producer.close)
+            asyncio.to_thread(producer.close)
             for producer in self._producers.values()
         ] + [
-            anyio.to_thread.run_sync(consumer.close)
+            asyncio.to_thread(consumer.close)
             for consumer in self._consumers.values()
         ]
 
-
-
         await asyncio.gather(*close_coros, return_exceptions=True)
-        
+
         # Close client after producers/consumers
         if self._client:
-            await anyio.to_thread.run_sync(self._client.close)
+            await asyncio.to_thread(self._client.close)
+        
         self._producers.clear()
         self._consumers.clear()
         self._receiver_tasks.clear()
         self._client = None
-        
+
         logger.info("Disconnected from Pulsar")
 
     async def _safe_close(self, obj: typing.Any, description: str) -> None:
         """Helper method to safely close Pulsar objects with error logging"""
         try:
-            await anyio.to_thread.run_sync(obj.close)
+            await asyncio.to_thread(obj.close)
             logger.debug(f"Successfully closed {description}")
         except Exception as e:
             logger.error(f"Error closing {description}: {e}", exc_info=True)
@@ -76,7 +70,7 @@ class PulsarBackend(BroadcastBackend):
     async def subscribe(self, channel: str) -> None:
         if channel not in self._consumers:
             try:
-                consumer = await anyio.to_thread.run_sync(
+                consumer = await asyncio.to_thread(
                     lambda: self._client.subscribe(
                         channel,
                         subscription_name=f"broadcast_subscription_{channel}",
@@ -94,11 +88,10 @@ class PulsarBackend(BroadcastBackend):
         if channel not in self._consumers:
             logger.warning(f"Attempted to unsubscribe from channel {channel} which was not subscribed")
             return
-            
-        consumer = self._consumers.pop(channel)
 
+        consumer = self._consumers.pop(channel)
         try:
-            await anyio.to_thread.run_sync(consumer.close)
+            await asyncio.to_thread(consumer.close)
         except ValueError:
             logger.warning(f"Consumer for channel {channel} was not in the client's list")
         except Exception as e:
@@ -109,11 +102,11 @@ class PulsarBackend(BroadcastBackend):
     async def publish(self, channel: str, message: typing.Any) -> None:
         try:
             if channel not in self._producers:
-                self._producers[channel] = await anyio.to_thread.run_sync(
+                self._producers[channel] = await asyncio.to_thread(
                     lambda: self._client.create_producer(channel)
                 )
             encoded_message = str(message).encode("utf-8")
-            await anyio.to_thread.run_sync(lambda: self._producers[channel].send(encoded_message))
+            await asyncio.to_thread(self._producers[channel].send, encoded_message)
             logger.debug(f"Published message to channel {channel}: {message}")
         except Exception as e:
             logger.error(f"Error publishing to channel {channel}: {e}", exc_info=True)
@@ -126,9 +119,9 @@ class PulsarBackend(BroadcastBackend):
         try:
             while True:
                 try:
-                    msg = await anyio.to_thread.run_sync(consumer.receive)
+                    msg = await asyncio.to_thread(consumer.receive)
                     content = msg.data().decode("utf-8")
-                    await anyio.to_thread.run_sync(consumer.acknowledge, msg)
+                    await asyncio.to_thread(consumer.acknowledge, msg)
                     await self._shared_queue.put(Event(channel=channel, message=content))
                     logger.debug(f"Received message from channel {channel}: {content}")
                 except asyncio.CancelledError:
@@ -138,6 +131,6 @@ class PulsarBackend(BroadcastBackend):
                     logger.error(f"Error receiving message from channel {channel}: {e}", exc_info=True)
         finally:
             try:
-                await anyio.to_thread.run_sync(consumer.close)
+                await asyncio.to_thread(consumer.close)
             except Exception as e:
                 logger.error(f"Error closing consumer in receiver cleanup for channel {channel}: {e}", exc_info=True)
