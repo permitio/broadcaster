@@ -4,6 +4,7 @@ import logging
 import typing
 from urllib.parse import urlparse
 import pulsar
+import traceback
 from broadcaster._base import Event
 from .base import BroadcastBackend
 
@@ -29,7 +30,7 @@ class PulsarBackend(BroadcastBackend):
             )
             logger.info("Successfully connected to Pulsar brokers")
         except Exception as e:
-            logger.error(f"Error connecting to Pulsar: {e}")
+            logger.error(f"Error connecting to Pulsar: {e}", exc_info=True)
             raise e
 
     async def disconnect(self) -> None:
@@ -37,10 +38,10 @@ class PulsarBackend(BroadcastBackend):
         for task in self._receiver_tasks.values():
             task.cancel()
         
-        # Wait for all receiver tasks to complete
+
         await asyncio.gather(*self._receiver_tasks.values(), return_exceptions=True)
         
-        # Prepare coroutines for closing producers and consumers
+        # Close producers and consumers first
         close_coros = [
             anyio.to_thread.run_sync(producer.close)
             for producer in self._producers.values()
@@ -48,15 +49,14 @@ class PulsarBackend(BroadcastBackend):
             anyio.to_thread.run_sync(consumer.close)
             for consumer in self._consumers.values()
         ]
-        
-        # Add client close coroutine if client exists
-        if self._client:
-            close_coros.append(anyio.to_thread.run_sync(self._client.close))
-        
-        # Execute all close operations concurrently
+
+
+
         await asyncio.gather(*close_coros, return_exceptions=True)
         
-        # Clear all containers
+        # Close client after producers/consumers
+        if self._client:
+            await anyio.to_thread.run_sync(self._client.close)
         self._producers.clear()
         self._consumers.clear()
         self._receiver_tasks.clear()
@@ -64,40 +64,60 @@ class PulsarBackend(BroadcastBackend):
         
         logger.info("Disconnected from Pulsar")
 
+    async def _safe_close(self, obj: typing.Any, description: str) -> None:
+        """Helper method to safely close Pulsar objects with error logging"""
+        try:
+            await anyio.to_thread.run_sync(obj.close)
+            logger.debug(f"Successfully closed {description}")
+        except Exception as e:
+            logger.error(f"Error closing {description}: {e}", exc_info=True)
+            raise
+
     async def subscribe(self, channel: str) -> None:
         if channel not in self._consumers:
-            consumer = await anyio.to_thread.run_sync(
-                lambda: self._client.subscribe(
-                    channel,
-                    subscription_name=f"broadcast_subscription_{channel}",
-                    consumer_type=pulsar.ConsumerType.Shared,
+            try:
+                consumer = await anyio.to_thread.run_sync(
+                    lambda: self._client.subscribe(
+                        channel,
+                        subscription_name=f"broadcast_subscription_{channel}",
+                        consumer_type=pulsar.ConsumerType.Shared,
+                    )
                 )
-            )
-            self._consumers[channel] = consumer
-            self._receiver_tasks[channel] = asyncio.create_task(self._receiver(channel, consumer))
-            logger.info(f"Subscribed to channel: {channel}")
-
+                self._consumers[channel] = consumer
+                self._receiver_tasks[channel] = asyncio.create_task(self._receiver(channel, consumer))
+                logger.info(f"Subscribed to channel: {channel}")
+            except Exception as e:
+                logger.error(f"Error subscribing to channel {channel}: {e}", exc_info=True)
+                raise
 
     async def unsubscribe(self, channel: str) -> None:
-        if channel in self._consumers:
-            consumer = self._consumers.pop(channel)
-            try:
-                await anyio.to_thread.run_sync(consumer.close)
-            except ValueError:
-                logger.warning(f"Consumer for channel {channel} was not in the client's list")
-            except Exception as e:
-                logger.error(f"Error closing consumer for channel {channel}: {e}")
+        if channel not in self._consumers:
+            logger.warning(f"Attempted to unsubscribe from channel {channel} which was not subscribed")
+            return
+            
+        consumer = self._consumers.pop(channel)
+
+        try:
+            await anyio.to_thread.run_sync(consumer.close)
+        except ValueError:
+            logger.warning(f"Consumer for channel {channel} was not in the client's list")
+        except Exception as e:
+            logger.error(f"Error closing consumer for channel {channel}: {e}", exc_info=True)
+        else:
             logger.info(f"Unsubscribed from channel: {channel}")
 
-
     async def publish(self, channel: str, message: typing.Any) -> None:
-        if channel not in self._producers:
-            self._producers[channel] = await anyio.to_thread.run_sync(
-                lambda: self._client.create_producer(channel)
-            )
-        encoded_message = str(message).encode("utf-8")
-        await anyio.to_thread.run_sync(lambda: self._producers[channel].send(encoded_message))
-        logger.info(f"Published message to channel {channel}: {message}")
+        try:
+            if channel not in self._producers:
+                self._producers[channel] = await anyio.to_thread.run_sync(
+                    lambda: self._client.create_producer(channel)
+                )
+            encoded_message = str(message).encode("utf-8")
+            await anyio.to_thread.run_sync(lambda: self._producers[channel].send(encoded_message))
+            logger.debug(f"Published message to channel {channel}: {message}")
+        except Exception as e:
+            logger.error(f"Error publishing to channel {channel}: {e}", exc_info=True)
+            raise
 
     async def next_published(self) -> Event:
         return await self._shared_queue.get()
@@ -110,10 +130,14 @@ class PulsarBackend(BroadcastBackend):
                     content = msg.data().decode("utf-8")
                     await anyio.to_thread.run_sync(consumer.acknowledge, msg)
                     await self._shared_queue.put(Event(channel=channel, message=content))
-                    logger.info(f"Received message from channel {channel}: {content}")
+                    logger.debug(f"Received message from channel {channel}: {content}")
+                except asyncio.CancelledError:
+                    logger.info(f"Receiver for channel {channel} was cancelled")
+                    raise
                 except Exception as e:
-                    logger.error(f"Error receiving message from channel {channel}: {e}")
-        except asyncio.CancelledError:
-            logger.info(f"Receiver for channel {channel} was cancelled")
+                    logger.error(f"Error receiving message from channel {channel}: {e}", exc_info=True)
         finally:
-            await anyio.to_thread.run_sync(consumer.close)
+            try:
+                await anyio.to_thread.run_sync(consumer.close)
+            except Exception as e:
+                logger.error(f"Error closing consumer in receiver cleanup for channel {channel}: {e}", exc_info=True)
