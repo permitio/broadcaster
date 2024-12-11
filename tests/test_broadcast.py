@@ -28,9 +28,9 @@ async def test_redis():
 async def test_pulsar():
     async with Broadcast("pulsar://localhost:6650") as broadcast:
         async with broadcast.subscribe("chatroom") as subscriber:
-            await asyncio.sleep(2)  # Increase this value
+            #await asyncio.sleep(2)  # Increase this value
             await broadcast.publish("chatroom", "hello")
-            await asyncio.sleep(2)  # Add an additional wait here
+            #await asyncio.sleep(2)  # Add an additional wait here
             event = await subscriber.get()
             assert event.channel == "chatroom"
             assert event.message == "hello"
