@@ -10,175 +10,256 @@ logger = logging.getLogger(__name__)
 
 class PulsarBackend(BroadcastBackend):
     def __init__(self, url: str, max_queue_size: int = 1000):
+        """Initialize PulsarBackend with connection settings.
+        
+        Args:
+            url: Pulsar connection URL
+            max_queue_size: Maximum size of the shared message queue
+        """
         parsed_url = urlparse(url)
         self._host = parsed_url.hostname or "localhost"
         self._port = parsed_url.port or 6650
         self._service_url = f"pulsar://{self._host}:{self._port}"
         self._client = None
-        self._producers = {}
-        self._consumers = {}
-        self._receiver_tasks = {}
+        self._producers: dict = {}
+        self._consumers: dict = {}
+        self._receiver_tasks: dict = {}
         self._shared_queue = asyncio.Queue(maxsize=max_queue_size)
+        self._connected = False
 
     async def connect(self) -> None:
+        """Establish connection to Pulsar broker."""
+        if self._connected:
+            logger.warning("Already connected to Pulsar")
+            return
+
         try:
-            logger.info("Connecting to Pulsar brokers")
+            logger.info("Connecting to Pulsar broker at %s", self._service_url)
             self._client = await asyncio.to_thread(pulsar.Client, self._service_url)
-            logger.info("Successfully connected to Pulsar brokers")
+            self._connected = True
+            logger.info("Successfully connected to Pulsar broker")
         except Exception as e:
-            logger.error(f"Error connecting to Pulsar: {e}", exc_info=True)
+            self._client = None
+            logger.error("Failed to connect to Pulsar broker", exc_info=e)
             raise
 
     async def disconnect(self) -> None:
-        try:
-            # Cancel all receiver tasks
-            for task in self._receiver_tasks.values():
+        """Disconnect from Pulsar, ensuring clean shutdown of all resources."""
+        if not self._connected:
+            logger.warning("Already disconnected from Pulsar")
+            return
+
+        logger.info("Starting Pulsar disconnect sequence")
+        
+        # Cancel and cleanup receiver tasks
+        if self._receiver_tasks:
+            logger.info("Cancelling receiver tasks...")
+            for channel, task in self._receiver_tasks.items():
                 task.cancel()
-
+            
             try:
-                await asyncio.gather(*self._receiver_tasks.values(), return_exceptions=True)
+                await asyncio.gather(*self._receiver_tasks.values())
+            except asyncio.CancelledError:
+                logger.info("Receiver tasks cancelled successfully")
             except Exception as e:
-                logger.error("Error during receiver tasks cleanup: %s", e, exc_info=True)
+                logger.error("Error during receiver tasks cleanup", exc_info=e)
 
-            # Close producers and consumers first
-            close_coros = [
-                asyncio.to_thread(producer.close)
-                for producer in self._producers.values()
-            ] + [
-                asyncio.to_thread(consumer.close)
-                for consumer in self._consumers.values()
-            ]
-
-            try:
-                await asyncio.gather(*close_coros, return_exceptions=True)
-            except Exception as e:
-                logger.error("Error closing producers/consumers: %s", e, exc_info=True)
-
-            # Close client after producers/consumers
-            if self._client:
+        # Close producers
+        if self._producers:
+            logger.info("Closing producers...")
+            for channel, producer in self._producers.items():
                 try:
-                    await asyncio.to_thread(self._client.close)
+                    await asyncio.to_thread(producer.close)
                 except Exception as e:
-                    logger.error("Error closing Pulsar client: %s", e, exc_info=True)
+                    logger.error(f"Failed to close producer for channel {channel}", exc_info=e)
 
-            self._producers.clear()
-            self._consumers.clear()
-            self._receiver_tasks.clear()
-            self._client = None
+        # Close consumers
+        if self._consumers:
+            logger.info("Closing consumers...")
+            for channel, consumer in self._consumers.items():
+                try:
+                    await asyncio.to_thread(consumer.close)
+                except Exception as e:
+                    logger.error(f"Failed to close consumer for channel {channel}", exc_info=e)
 
-            logger.info("Disconnected from Pulsar")
-        except Exception as e:
-            logger.error("Unexpected error during disconnect: %s", e, exc_info=True)
-            raise
+        # Finally close the client
+        if self._client:
+            logger.info("Closing Pulsar client...")
+            try:
+                await asyncio.to_thread(self._client.close)
+            except Exception as e:
+                logger.error("Failed to close Pulsar client", exc_info=e)
+
+        # Clear all internal state
+        self._producers.clear()
+        self._consumers.clear()
+        self._receiver_tasks.clear()
+        self._client = None
+        self._connected = False
+
+        logger.info("Pulsar disconnect sequence completed")
 
     async def subscribe(self, channel: str) -> None:
-        if channel not in self._consumers:
-            try:
-                consumer = await asyncio.to_thread(
-                    lambda: self._client.subscribe(
-                        channel,
-                        subscription_name=f"broadcast_subscription_{channel}",
-                        consumer_type=pulsar.ConsumerType.Shared,
-                    )
-                )
-                self._consumers[channel] = consumer
-                self._receiver_tasks[channel] = asyncio.create_task(self._receiver(channel, consumer))
-                logger.info(f"Subscribed to channel: {channel}")
-            except Exception as e:
-                logger.error(f"Error subscribing to channel {channel}: {e}", exc_info=True)
-                # Clean up any partially created resources
-                if channel in self._consumers:
-                    try:
-                        await asyncio.to_thread(self._consumers[channel].close)
-                        del self._consumers[channel]
-                    except Exception as cleanup_error:
-                        logger.error(f"Error during subscription cleanup: {cleanup_error}", exc_info=True)
-                raise
-
-    async def unsubscribe(self, channel: str) -> None:
-        # First check if the channel exists in our consumers
-        if channel not in self._consumers:
-            logger.warning(f"Attempted to unsubscribe from channel {channel} which was not subscribed")
-            return
-
-        # Get the consumer and remove it from the dict
-        consumer = self._consumers.pop(channel, None)
+        """Subscribe to a Pulsar topic/channel.
         
-        # Check if we actually got a consumer object
-        if consumer is None:
-            logger.warning(f"Consumer for channel {channel} was not in the client's list")
+        Args:
+            channel: The channel/topic name to subscribe to
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to Pulsar broker")
+
+        if channel in self._consumers:
+            logger.warning(f"Already subscribed to channel: {channel}")
             return
 
         try:
-            # Cancel and wait for the receiver task first
-            if channel in self._receiver_tasks:
-                logger.info(f"Stopped consuming messages from channel {channel}, closing consumer...")
-                task = self._receiver_tasks.pop(channel)
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    logger.error(f"Error cancelling receiver task for channel {channel}: {e}", exc_info=True)
-
-            # Then close the consumer
-            await asyncio.to_thread(consumer.close)
-            logger.info(f"Unsubscribed from channel: {channel}")
+            consumer = await asyncio.to_thread(
+                lambda: self._client.subscribe(
+                    channel,
+                    subscription_name=f"broadcast_subscription_{channel}",
+                    consumer_type=pulsar.ConsumerType.Shared,
+                )
+            )
+            
+            self._consumers[channel] = consumer
+            
+            # Create and store receiver task
+            receiver_task = asyncio.create_task(
+                self._receiver(channel, consumer),
+                name=f"pulsar_receiver_{channel}"
+            )
+            self._receiver_tasks[channel] = receiver_task
+            
+            logger.info(f"Successfully subscribed to channel: {channel}")
+            
         except Exception as e:
-            logger.error(f"Error during unsubscribe from channel {channel}: {e}", exc_info=True)
+            logger.error(f"Failed to subscribe to channel {channel}", exc_info=e)
+            # Cleanup any partially created resources
+            await self._cleanup_subscription(channel)
             raise
 
+    async def unsubscribe(self, channel: str) -> None:
+        """Unsubscribe from a Pulsar topic/channel.
+        
+        Args:
+            channel: The channel/topic to unsubscribe from
+        """
+        if not self._connected:
+            logger.warning("Not connected to Pulsar broker")
+            return
+
+        if channel not in self._consumers:
+            logger.warning(f"Not subscribed to channel: {channel}")
+            return
+
+        await self._cleanup_subscription(channel)
+        logger.info(f"Successfully unsubscribed from channel: {channel}")
+
     async def publish(self, channel: str, message: typing.Any) -> None:
+        """Publish a message to a Pulsar topic/channel.
+        
+        Args:
+            channel: The channel/topic to publish to
+            message: The message to publish
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to Pulsar broker")
+
         try:
+            # Get or create producer
             if channel not in self._producers:
                 self._producers[channel] = await asyncio.to_thread(
                     lambda: self._client.create_producer(channel)
                 )
+
+            # Encode and send message
             encoded_message = str(message).encode("utf-8")
             await asyncio.to_thread(self._producers[channel].send, encoded_message)
             logger.debug(f"Published message to channel {channel}: {message}")
+            
         except Exception as e:
-            logger.error(f"Error publishing to channel {channel}: {e}", exc_info=True)
-            # Clean up failed producer
+            logger.error(f"Failed to publish to channel {channel}", exc_info=e)
+            # Cleanup failed producer
             if channel in self._producers:
                 try:
                     await asyncio.to_thread(self._producers[channel].close)
                     del self._producers[channel]
-                except Exception as cleanup_error:
-                    logger.error(f"Error cleaning up failed producer: {cleanup_error}", exc_info=True)
+                except Exception as cleanup_e:
+                    logger.error(f"Failed to cleanup producer for channel {channel}", exc_info=cleanup_e)
             raise
 
     async def next_published(self) -> Event:
+        """Get the next published message from any subscribed channel."""
+        if not self._connected:
+            raise RuntimeError("Not connected to Pulsar broker")
+
         try:
             return await self._shared_queue.get()
         except Exception as e:
-            logger.error("Error getting next published message: %s", e, exc_info=True)
+            logger.error("Failed to get next published message", exc_info=e)
             raise
 
+    async def _cleanup_subscription(self, channel: str) -> None:
+        """Clean up subscription resources for a channel.
+        
+        Args:
+            channel: The channel to cleanup
+        """
+        # Cancel and cleanup receiver task
+        if channel in self._receiver_tasks:
+            task = self._receiver_tasks.pop(channel)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"Error cancelling receiver task for channel {channel}", exc_info=e)
+
+        # Close and cleanup consumer
+        if channel in self._consumers:
+            consumer = self._consumers.pop(channel)
+            try:
+                await asyncio.to_thread(consumer.close)
+            except Exception as e:
+                logger.error(f"Error closing consumer for channel {channel}", exc_info=e)
+
     async def _receiver(self, channel: str, consumer: pulsar.Consumer) -> None:
+        """Background task to receive messages from a Pulsar topic/channel.
+        
+        Args:
+            channel: The channel being received from
+            consumer: The Pulsar consumer instance
+        """
         try:
             while True:
                 try:
+                    # Receive message
                     msg = await asyncio.to_thread(consumer.receive)
                     content = msg.data().decode("utf-8")
+                    
+                    # Acknowledge message
                     await asyncio.to_thread(consumer.acknowledge, msg)
-                    await self._shared_queue.put(Event(channel=channel, message=content))
+                    
+                    # Put message in shared queue
+                    event = Event(channel=channel, message=content)
+                    await self._shared_queue.put(event)
+                    
                     logger.debug(f"Received message from channel {channel}: {content}")
+                    
                 except asyncio.CancelledError:
                     logger.info(f"Receiver for channel {channel} was cancelled")
                     raise
                 except Exception as e:
-                    logger.error(f"Error receiving message from channel {channel}: {e}", exc_info=True)
-                    # Add a small delay before retrying to avoid tight loop on persistent errors
-                    await asyncio.sleep(1)
+                    logger.error(f"Error receiving message from channel {channel}", exc_info=e)
+                    await asyncio.sleep(1)  # Backoff on error
+                    
         except asyncio.CancelledError:
             logger.info(f"Receiver task for channel {channel} was cancelled")
         except Exception as e:
-            logger.error(f"Fatal error in receiver for channel {channel}: {e}", exc_info=True)
+            logger.error(f"Fatal error in receiver for channel {channel}", exc_info=e)
         finally:
             try:
                 await asyncio.to_thread(consumer.close)
             except Exception as e:
-                logger.error(f"Error closing consumer in receiver cleanup for channel {channel}: {e}", exc_info=True)
-                
+                logger.error(f"Error closing consumer in receiver cleanup for {channel}", exc_info=e)
