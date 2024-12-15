@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 
 from broadcaster import Broadcast
 
@@ -22,7 +23,7 @@ async def test_redis():
             assert event.channel == "chatroom"
             assert event.message == "hello"
 
-## pulsar test 
+
 @pytest.mark.asyncio
 async def test_pulsar():
     async with Broadcast("pulsar://localhost:6650") as broadcast:

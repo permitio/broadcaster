@@ -31,6 +31,7 @@ class Broadcast:
         parsed_url = urlparse(url)
         self._backend: BroadcastBackend
         self._subscribers: Dict[str, Any] = {}
+
         if parsed_url.scheme in ("redis", "rediss"):
             from broadcaster._backends.redis import RedisBackend
 
@@ -41,7 +42,7 @@ class Broadcast:
 
             self._backend = PostgresBackend(url)
 
-        if parsed_url.scheme == "kafka":
+        elif parsed_url.scheme == "kafka":
             from broadcaster._backends.kafka import KafkaBackend
 
             self._backend = KafkaBackend(url)
@@ -55,6 +56,9 @@ class Broadcast:
             from broadcaster._backends.pulsar import PulsarBackend
 
             self._backend = PulsarBackend(url)
+
+        else:
+            raise ValueError(f"Unsupported backend: {parsed_url.scheme}")
 
     async def __aenter__(self) -> "Broadcast":
         await self.connect()
