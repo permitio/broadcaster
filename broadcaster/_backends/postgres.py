@@ -12,6 +12,11 @@ try:
 except TypeError:
     POOL_MAX_SIZE = 10
 
+try:
+    POOL_MIN_SIZE = int(os.getenv("BROADCASTER_PG_MIN_POOL_SIZE"))
+except TypeError:
+    POOL_MIN_SIZE = 10
+
 class PostgresBackend(BroadcastBackend):
     _pools = {}
     _pools_lock = asyncio.Lock()
@@ -22,7 +27,7 @@ class PostgresBackend(BroadcastBackend):
     async def _get_pool(self):
         async with self.__class__._pools_lock:
             if self._url not in self.__class__._pools:
-                self.__class__._pools[self._url] = await asyncpg.create_pool(self._url, max_size=POOL_MAX_SIZE)
+                self.__class__._pools[self._url] = await asyncpg.create_pool(self._url, min_size=POOL_MIN_SIZE, max_size=POOL_MAX_SIZE)
             return self.__class__._pools[self._url]
 
     async def connect(self) -> None:
