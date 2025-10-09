@@ -37,8 +37,10 @@ class Broadcast:
 
             self._backend = RedisBackend(url)
 
-        elif parsed_url.scheme in ("postgres", "postgresql"):
+        elif parsed_url.scheme in ("postgres", "postgresql", "postgresql+psycopg"):
             from broadcaster._backends.postgres import PostgresBackend
+            # NOTE: SQLAlchemy 2 with psycopg 3 uses "postgresql+psycopg" scheme
+            # https://docs.sqlalchemy.org/en/20/dialects/postgresql.html#module-sqlalchemy.dialects.postgresql.psycopg
 
             self._backend = PostgresBackend(url)
 
