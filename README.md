@@ -89,6 +89,24 @@ Python 3.7+
 * `Broadcast("kafka://broker_1:9092,broker_2:9092")`
 
 
+## Postgres TCP keepalive
+
+A `LISTEN` connection is idle by nature: it sends nothing and waits for `NOTIFY`s. If the
+server's address goes silent without closing the socket (e.g. an RDS Multi-AZ failover, a
+network partition) the client never receives a FIN/RST, the socket stays `ESTABLISHED`, and
+the listener is deaf with no error. asyncpg exposes no keepalive option, so the Postgres
+backend enables TCP keepalive on every pooled connection itself. It is **on by default**
+(idle 30 s, 10 s between probes, 3 lost probes → the connection errors within ~60 s of the
+peer going silent and the subscriber is notified). Tune or disable it with the libpq
+parameter names in the URL (they are stripped before the URL reaches asyncpg):
+
+```
+postgres://user:pw@host:5432/db?keepalives=1&keepalives_idle=30&keepalives_interval=10&keepalives_count=3
+postgres://user:pw@host:5432/db?keepalives=0     # disable
+```
+
+The existing `BROADCASTER_PG_MAX_POOL_SIZE` environment variable still controls the pool size.
+
 ## Kafka environment variables
 
 The following environment variables are exposed to allow SASL authentication with Kafka (along with their default assignment):
