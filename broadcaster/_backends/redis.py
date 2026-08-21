@@ -13,9 +13,10 @@ class RedisBackend(BroadcastBackend):
         self._host = parsed_url.hostname or "localhost"
         self._port = parsed_url.port or 6379
         self._password = parsed_url.password or None
+        self._username = parsed_url.username or None
 
     async def connect(self) -> None:
-        kwargs = {"host": self._host, "port": self._port, "password": self._password}
+        kwargs = {"host": self._host, "port": self._port, "password": self._password, "username": self._username}
         self._pub_conn = await asyncio_redis.Connection.create(**kwargs)
         self._sub_conn = await asyncio_redis.Connection.create(**kwargs)
         self._subscriber = await self._sub_conn.start_subscribe()
