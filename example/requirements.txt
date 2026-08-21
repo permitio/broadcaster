@@ -3,3 +3,4 @@ websockets
 starlette
 jinja2
 broadcaster[redis,postgres,kafka]
+zipp>=3.19.1 # not directly required, pinned by Snyk to avoid a vulnerability
