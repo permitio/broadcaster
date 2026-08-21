@@ -37,7 +37,7 @@ class Broadcast:
 
             self._backend = RedisBackend(url)
 
-        elif parsed_url.scheme in ("postgres", "postgresql"):
+        elif parsed_url.scheme in ("postgres", "postgresql", "postgresql+psycopg"):
             from broadcaster._backends.postgres import PostgresBackend
 
             self._backend = PostgresBackend(url)
