@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Optional
 
 from .._base import Event
 
@@ -22,5 +22,5 @@ class BroadcastBackend:
     async def publish(self, channel: str, message: Any) -> None:
         raise NotImplementedError()
 
-    async def next_published(self) -> Event:
+    async def next_published(self) -> Optional[Event]:
         raise NotImplementedError()
