@@ -107,6 +107,20 @@ postgres://user:pw@host:5432/db?keepalives=0     # disable
 
 The existing `BROADCASTER_PG_MAX_POOL_SIZE` environment variable still controls the pool size.
 
+## Redis connection loss
+
+When the Redis subscriber connection is lost (failover, managed-Redis maintenance, a
+`CLIENT KILL`, a network reset), the Redis backend ends all subscribers: `Subscriber.get()`
+raises `Unsubscribed` and `async for` loops end. The application decides how to reconnect
+and resync; messages published while the connection was down are not delivered.
+
+The subscriber connection deliberately does not use asyncio_redis' auto-reconnect: on a
+password-protected Redis the reconnect fails silently (`AUTH` is rejected client-side with
+"Cannot run command inside pubsub subscription"), `SUBSCRIBE` is never re-sent and the
+subscriber stays deaf without any error. The subscriber socket also has TCP keepalive
+(idle 30 s, 10 s between probes, 3 lost probes), so a peer that goes silent without closing
+the socket is detected within ~60 s. The publisher connection keeps auto-reconnecting.
+
 ## Kafka environment variables
 
 The following environment variables are exposed to allow SASL authentication with Kafka (along with their default assignment):
